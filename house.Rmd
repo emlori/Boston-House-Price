@@ -1,0 +1,856 @@
+---
+title: "Projet de Modélisation Avancé"
+author: "Emilian Loric & Alexandre Révillon IS4"
+date: '2023-03-13'
+output: pdf_document
+---
+
+# Description multivariée des caractéristiques des maisons.
+#Quelles variables expliquent le mieux le prix ? 
+
+## Premières lignes du jeu de données
+```{r import, echo=FALSE, message=FALSE}
+library(readr)
+maisons <- read_table2("maisons.txt", col_types = cols(AGE = col_integer(), 
+    NE = col_logical(), CUST = col_logical(), 
+    COR = col_logical(), TAX = col_integer()), 
+    skip = 17)
+maisons
+```
+## Description de la signification de chaque variable
+```{r, echo=FALSE}
+str(maisons)
+```
+
+PRIX = Prix de vente (en centaines de dollars)
+SQFT = Surface habitable en pieds carrés
+AGE = Âge de la maison (années)
+CARACTÉRISTIQUES = Nombre de 11 caractéristiques (lave-vaisselle, réfrigérateur, micro-ondes, broyeur, laveuse, interphone, lucarne(s), compacteur, sèche-linge, etc,
+broyeur, laveuse, interphone, puits de lumière, compacteur, sécheuse, aménagement pour les handicapés, accès à la télévision par câble)
+câble)
+NE = Situé dans le secteur nord-est de la ville (1) ou non (0)
+CUST = Construit sur mesure (1) ou non (0)
+COR = Emplacement d'angle (1) ou non (0)
+TAX = Taxes annuelles ($)
+
+## Nombre d'observations et nombre de caractéristiques
+```{r dimension, echo=FALSE}
+dim(maisons)
+```
+On a dans le jeu de données 117 observations pour 8 variables.
+
+## Desciption univariée de chaque variable
+```{r summary, echo=FALSE}
+summary(maisons)
+```
+Il y a 2 variables comportant des données manquantes, à savoir AGE et TAX.
+Pour la variable AGE, il y a 41.88% de données manquantes et 8.54% pour la variable TAX.
+
+```{r visu_NA, echo=FALSE, message=FALSE}
+
+library(mice)
+md.pattern(maisons)
+
+```
+
+## MCAR, MAR ou MNAR
+
+On visualise entre différentes variables pour essayer détecter visuellement d'éventuels MCAR, MAR ou MNAR.
+```{r graph_NA, echo=FALSE}
+#install.packages("VIM")
+library(VIM)
+
+for (var in colnames(maisons)){
+  marginplot(maisons[, c(var,"AGE")], col = mdc(c("obs", "mis")), cex = 1.2, cex.lab = 1.2,pch=19)
+}
+```
+
+### Test de Student sur la variable PRICE entre le groupe avec données manquantes sur AGE et le groupe sans donnée manquante sur AGE
+```{r t_test_AGE, echo=FALSE}
+t.test(maisons$PRICE[is.na(maisons$AGE)],maisons$PRICE[!is.na(maisons$AGE)])
+```
+
+La distribution de la variable PRIX est significativement différente entre les observations qui ont pour donnée manquante AGE et les autres. 
+Les maisons pours lesquels nous n'avons pas la variable AGE sont ceux qui ont un prix en moyenne moins élevé que ceux dont on a l'AGE. Par conséquent, la répartition des données manquantes ne seraient donc pas complètement aléatoire.
+
+### Test de Student sur la variable FEATS entre le groupe avec données manquantes sur AGE et le groupe sans donnée manquante sur AGE
+
+```{r t_test_FEATS, echo=FALSE}
+t.test(maisons$FEATS[is.na(maisons$AGE)],maisons$FEATS[!is.na(maisons$AGE)])
+```
+La pvalue est aussi très inférieur au seuil d'erreur de 5%, on rejette donc l'hypothèse que les données manquante sur la variable AGE soient complètement aléatoires.
+
+### Test de Student sur la variable SQFT entre le groupe avec données manquantes sur AGE et le groupe sans donnée manquante sur AGE
+```{r t.test_SQFT, echo=FALSE}
+t.test(maisons$SQFT[is.na(maisons$AGE)],maisons$SQFT[!is.na(maisons$AGE)])
+```
+### Test de Student sur la variable TAX entre le groupe avec données manquantes sur AGE et le groupe sans donnée manquante sur AGE
+```{r t_test_TAX, echo=FALSE}
+t.test(maisons$TAX[is.na(maisons$AGE)],maisons$TAX[!is.na(maisons$AGE)])
+```
+
+# Graphique des corrélations entre chaque variable
+```{r corplot, echo=FALSE}
+library(corrplot)
+mcor <- cor(maisons[,1:8], use="pairwise.complete.obs")
+print(round(mcor*100,2))
+#corrplot(mcor, type="upper", order="hclust",tl.col="black", tl.srt = 45)
+```
+Etant données qu l'on observe des corrélations entre la variable AGE et d'autres variables telles que PRICE ou encore TAX, on peut en déduire que les valeurs manqantes ne sont pas MCAR comme nous l'avions aussi conclut lors des test de Student. La présence des valeurs manquantes ne pouvant être expliqué que par la variable AGE elle-même, elle ne sont pas MNAR non plus. On en déduit donc que les valeurs manquantes pour la variable AGE sont MAR.
+
+Dans ce cas, une approche pertinente d'imputation des données est de réaliser une imputation multiple avec des valeurs plausibles.
+
+
+#MICE
+```{r mice ,echo=FALSE}
+# Charger le paquet pour l'imputation des données manquantes
+library("mice")
+
+dm <- mice(maisons, m=5, maxit=50, seed=123, print=FALSE)
+
+```
+
+## Jeu de données n°1 de l'imputation multiple MICE
+```{r d1_complete, echo=FALSE}
+d1 = complete(dm,1)
+summary(d1)
+```
+
+## Graphique sur la distribution des données manquante des 5 jeux de données issus de MICE
+```{r stripplot, echo=FALSE}
+library(lattice)
+stripplot(dm, pch = 20, cex = 1.2)
+```
+La distribution des données manquantes semble cohérente pour chaque jeu de données.
+
+# Fusion des 5 jeux de données imputés
+
+Pour le reste de l'étude, nous avons besoin d'avoir un jeux de données sasn données manquante. Pour cela, nous allons fusionner les différents jeux de données obtenus par les différentes imputations en faisant la moyenne pour chaque individu des données provenant des 5 jeux de données.
+
+```{r fusion_mice_function ,echo=FALSE}
+moy_complete = function (mice_ds){
+  res = data.frame(row.names = T)
+  for (col in colnames(mice_ds$'1')){
+    for (i in 1:nrow(mice_ds$'1')) {
+      res[i, col] = mean(c(mice_ds$'1'[i, col], mice_ds$'2'[i, col], mice_ds$'3'[i, col], mice_ds$'4'[i, col], mice_ds$'5'[i, col]))
+    }
+  }
+  res[,"NE"] = as.logical(res[, "NE"])
+  res[,"COR"] = as.logical(res[, "COR"])
+  res[,"CUST"] = as.logical(res[, "CUST"])
+  return (res)
+}
+```
+
+```{r fusion_mice, echo=FALSE}
+dm_complete = complete(dm, "all")
+dm_moy_complete = moy_complete(dm_complete)
+```
+
+
+# Etude de la multicolinéarité
+
+```{r acp ,echo=FALSE, fig.align='center'}
+library(FactoMineR)
+acp = PCA(dm_moy_complete[,c(1,2,3,4,8)], scale=T, graph = T, quanti.sup = 1) #-7 : sans la variable PRIX
+print(acp$eig)
+```
+
+La dernière composante représente 2.29% de l'information, la question se pose de savoir si nous devons la considérer comme négligeable ou non, et donc s'alerter d'une éventuelle multicolinéarité.
+
+
+Pour étudier les possibles multicolinéarités, il faut d'abord réaliser un modèle de régression prennant en compte toutes les variables. Ici comme nous avons 5 jeux de données à cause de l'imputation multiple, nous avons donc 5 modèles différents.
+
+```{r lm_fit_all, echo=FALSE, results='hide'}
+fit <- lm(PRICE ~ ., dm_moy_complete)
+print(fit)
+```
+
+Le critère pour étudier la multicolinéarité que nous allons étudier est le critère VIF:
+
+$VIF(X_i)=\frac{1}{1-R^2_i}$
+
+Lorsque ce critère VIF est élevé, c'est un signe de multicolinéarité évidente.
+
+```{r vif ,echo=FALSE}
+library(car)
+vif(fit)
+```
+On remarque que le VIF des variables TAX et SQFT sont suffisemment élevé pour conclure d'une multicolinéartié entre ces 2 variables.
+
+Pour la suite de l'étude, nous allons donc utiliser des méthode permettant de selectionner les variables interessantes pour réaliser un modèle de regression linéaire. Nous utiliserons les méthodes Lasso, PCR, PLS, Ridge, Elastic-net, et stepAIC pour lesquelles nous étudierons leurs performances afin de garder le meilleur modèle. Plus précisemment, nous utiliserons le critère de RMSEP.
+
+#Selection des variables (Ridge, Lasso, PCR, PLS, Elastic-net et stepAIC)
+
+## stepAIC
+
+```{r stepAIC ,echo=FALSE}
+library(MASS)
+
+fit = lm(PRICE ~ ., dm_moy_complete)
+
+aic<- stepAIC(fit, trace=0)
+aic
+
+```
+
+Suite au step AIC, les variables qui expliquent le mieux le "PRICE" sont "CUST", "TAX", "SQFT" et "COR".
+
+Maintenant on va calculer son RMSEP afin de pouvoir comparer ce modèle avec les autres que nous allons faire par la suite.
+```{r rmsep_aic ,echo=FALSE}
+rmsep=function(fit){
+  h=lm.influence(fit)$h
+  return(sqrt(mean((residuals(fit)/(1-h))^2)))
+}
+
+rmsep(aic)
+```
+
+## PCR
+
+```{r pcr, echo=FALSE}
+library(pls)
+
+m_pcr=pcr(PRICE~., scale=TRUE, validation="LOO", jackknife = TRUE, data=dm_moy_complete)
+
+m_pcr
+```
+
+```{r plot_pcr, echo=FALSE}
+plot(m_pcr,"validation", estimate = c("train", "CV"), legendpos = "topright")
+```
+```{r summary_pcr, echo=FALSE}
+summary(m_pcr)
+```
+A l'aide du graphique et du tableau des valeurs de RMSEP, on cherche le nombre de composante qui minimise le RMSEP. Ici on va donc choisir 5 composantes pour une valeur de RMSEP de 173.3. On a ici un RMSEP inférieur à celui obtenu à l'aide de stepAIC. Le modèle sera donc meilleur.
+
+Voici les prédictions graphiquement (obtenues par validation croisée) :
+```{r obsfit_plot_pcr, echo=FALSE, fig.align='center'}
+obsfit = predplot(m_pcr, ncomp=5, which = "validation", asp=1,line=TRUE, main="Predicted vs Observed : 5cp")
+points(obsfit, pch=16, col="red")
+```
+
+Les coefficients et leur significativité est obtenue avec :
+```{r coefplot_pcr, echo=FALSE, fig.align='center'}
+coefplot(m_pcr, ncomp=5, se.whiskers = TRUE, labels = prednames(m_pcr), cex.axis = 0.5)
+```
+
+
+
+```{r jack_test_pcr, echo=FALSE}
+jack.test(m_pcr, ncomp=5)
+```
+Pour un seuil d'erreur de $\alpha = 5\%$, on observe que seul les variables SQFT et TAX sont significative.
+
+
+Pour obtenir en plus la valeur de l'intercept, nous devons faire la manipulation suivante:
+```{r intercept_pcr, echo=FALSE}
+coef(m_pcr, ncomp=5, intercept=TRUE)
+```
+Les variables qui ont le plus d'importance dans le modèle obtenu sont les variables "SQFT", "TAX" et "CUST". Nous pouvons noter que ces variables sont égalmenet dans le modèle issu de stepAIC.
+
+
+```{r unscale_coef_pcr, echo=FALSE}
+sds = apply(dm_moy_complete,2, "sd" ) # calcul des ecart-types de chaque variable
+coef(m_pcr, ncomp=5, intercept=TRUE)[2:8]/sds[2:8]
+```
+Le modèle de régression obtenu est donc :
+
+$PRICE = 190.2845 + 0.2877*SQFT - 2.6194*AGE - 2.2033*FEATS + 42.0871*NE + 151.4776*CUST - 72.0717*COR + 0.5136*TAX + erreur$
+
+Ce modèle à un RMSEP de 173.3, ce qui est un meilleur score de prediction que le modèle obtenu à l'aide de stepAIC.
+
+
+##PLS
+
+```{r pls, echo=FALSE}
+m_pls=plsr(PRICE~., scale=TRUE, validation="LOO", jackknife = TRUE, data=dm_moy_complete)
+```
+
+```{r plot_pls, echo=FALSE, fig.align='center'}
+plot(m_pls,"validation", estimate = c("train", "CV"), legendpos = "topright")
+```
+
+```{r summary_pls, echo=FALSE}
+summary(m_pls)
+```
+A l'aide du graphique et du tableau des valeurs de RMSEP, on cherche le nombre de composante qui minimise le RMSEP. Ici on va donc choisir 3 composantes pour une valeur de RMSEP de 177.8. On a ici un RMSEP inférieur à ceux obtenus précedemment.
+
+Voici les prédictions graphiquement (obtenues par validation croisée) :
+```{r obsfit_plot_pls, echo=FALSE, fig.align='center'}
+obsfit = predplot(m_pls, ncomp=3, which = "validation", asp=1,line=TRUE, main="Predicted vs Observed : 3cp")
+points(obsfit, pch=16, col="red")
+```
+
+Les coefficients et leur significativité est obtenue avec :
+```{r coefplot_pls, echo=FALSE, fig.align='center'}
+coefplot(m_pls, ncomp=3, se.whiskers = TRUE, labels = prednames(m_pcr), cex.axis = 0.5)
+```
+
+
+
+```{r jack_test_pls, echo=FALSE}
+jack.test(m_pls, ncomp=3)
+```
+Pour un seuil d'erreur de $\alpha = 5\%$, on observe que seul les variables SQFT, TAX et CUSTTRUE sont significative.
+
+
+Pour obtenir en plus la valeur de l'intercept, nous devons faire la manipulation suivante:
+```{r coef_pls, echo=FALSE}
+coef(m_pls, ncomp=3, intercept=TRUE)
+```
+Les variables qui ont le plus d'importance dans le modèle obtenu sont les variables "SQFT", "TAX" et "CUST". Nous pouvons noter que ces variables sont égalmenet dans le modèle issu de stepAIC.
+
+
+```{r unscale_coef_pls, echo=FALSE}
+sds = apply(dm_moy_complete,2, "sd" ) # calcul des ecart-types de chaque variable
+coef(m_pls, ncomp=3, intercept=TRUE)[2:8]/sds[2:8]
+```
+Le modèle de régression obtenu est donc :
+
+$PRICE = 151.9596 + 0.2792*SQFT - 1.5056*AGE - 4.2126*FEATS + 12.9535*NE + 129.2727*CUST - 79.0079*COR + 0.5575*TAX + erreur$
+
+Ce modèle à un RMSEP de 177.8, ce qui est le pire score de prediction des modèles obtenus pour le moment.
+
+
+
+## Ridge
+
+```{r x_y, echo=FALSE}
+X = model.matrix(PRICE~., dm_moy_complete)[,-1]
+Y =dm_moy_complete$PRICE
+```
+
+
+```{r cv_fit_plot_ridge1,echo=FALSE, fig.align='center'}
+library(glmnet)
+#choisisons le lambda qui minimise le RMSEP (ou equivalent, la cross-validation = MSEP):
+cv_fit <- cv.glmnet(X,Y, alpha = 0, lambda = seq(0,10, 0.1), grouped = FALSE, nfolds =nrow(dm_moy_complete))
+plot(cv_fit, main = "Choix de lambda")
+```
+
+```{r fit_plot_ridge2, echo=FALSE, fig.align='center'}
+cv_fit <- cv.glmnet(X,Y, alpha = 0, lambda = seq(0,100000, 10), grouped = FALSE, nfolds =nrow(dm_moy_complete))
+plot(cv_fit, main = "Choix de lambda")
+```
+
+
+```{r lmbda_pot_ridge, echo=FALSE}
+lambda_optimal = cv_fit$lambda.min
+print(lambda_optimal)
+```
+
+```{r min_cv_ridge, echo=FALSE}
+print(min(cv_fit$cvm))
+```
+
+
+```{r rmsep-ridge, echo=FALSE}
+rmsep_ridge =sqrt(min(cv_fit$cvm))
+print(rmsep_ridge)
+```
+
+```{r glmnet_ridge, echo=FALSE}
+m_ridge <- glmnet(X,Y, alpha = 0, lambda = lambda_optimal)
+```
+
+### Coefficients sur les données normaliséss
+
+Les coefficients du modèle Ridge optimal sur les données normalisées sont :
+```{r coef_norm_ridge, echo=FALSE}
+sds = apply(dm_moy_complete,2, "sd" )
+coef(m_ridge)[2:8]*sds[2:8]
+```
+Les variables les plus influentes issues du modèle de régression de Ridge sont "TAX","SQFT" et "CUST".
+
+### Coefficients sur les données d'origine
+
+Les coefficients du modèle Ridge optimal sur les données d'origines sont :
+```{r coef_ridge, echo=FALSE}
+coef(m_ridge) # pour voir les coefficients
+```
+
+Remarque : Nous n'avons pas leur significativité avec glmnet.
+
+
+## Lasso
+
+C'est la même chose que pour Ridge, sauf que le paramètre $\alpha$ vaut 1.
+
+### Graphique pour déterminer le lambda optimal
+```{r fit_plot_lasso1, echo=FALSE}
+cv_fit <- cv.glmnet(X,Y, alpha = 1, lambda = seq(0,100000, 10), grouped = FALSE, nfolds =nrow(dm_moy_complete))
+plot(cv_fit, main = "Choix de lambda")
+```
+### Lambda optimal
+```{r fit_plot_lasso2, echo=FALSE}
+lambda_optimal = cv_fit$lambda.min
+print(lambda_optimal)
+```
+
+```{r min_cv_lasso, echo=FALSE}
+print(min(cv_fit$cvm))
+```
+
+### RMSEP modèle de Lasso
+```{r rmsep_lasso, echo=FALSE}
+rmsep_lasso =sqrt(min(cv_fit$cvm))
+print(rmsep_lasso)
+```
+
+```{r glmnet_lasso, echo=FALSE}
+m_lasso <- glmnet(X,Y, alpha = 1, lambda = lambda_optimal)
+```
+
+### Coefficients sur les données normalisées
+
+Les coefficients du modèle Lasso optimal sur les données normalisées sont :
+```{r coef_norm_lasso, echo=FALSE}
+coef(m_lasso)[2:8]*sds[2:8]
+```
+Les variables les plus influentes issues du modèle de régression de Lasso sont "TAX","SQFT" et "CUST".
+
+### Coefficients sur les données d'origine
+
+Les coefficients du modèle Lasso optimal sur les données normalisées sont :
+```{r coef_lasso, echo=FALSE}
+coef(m_lasso)
+```
+
+## Elastic-net
+
+La régression de type elastic-net consiste à combiner Ridge L1 et Lasso L2 pour améliorer la performance de
+la prédiction et la stabilité du modèle. Cette méthode est souvent utilisée pour traiter des problèmes ou le
+nombre de variables explicatives est important et ou il existe des relations de corrélation entre ces variables
+comme ici.
+
+Par itération, nous déterminons le $alpha$ minimisant le RMSEP.
+
+### Itération 1
+```{r echo=FALSE}
+
+elastic_net = function(X, Y, alpha_start, alpha_end, step){
+  d = data.frame(matrix(ncol = 3))
+  colnames(d) = c("alpha", "rmsep", "lambda")
+  alpha = alpha_start
+  i = 1
+  while(alpha < alpha_end){
+    cv_fit <- cv.glmnet(X,Y, alpha = alpha, grouped = FALSE, nfolds =nrow(X))
+    lambda = cv_fit$lambda.min
+    rmsep =sqrt(min(cv_fit$cvm))
+    d[i,] = c(alpha, rmsep, lambda)
+    alpha <- alpha + step
+    i = i + 1
+  }
+  return (d)
+}
+
+
+en1 = elastic_net(X, Y, 0.1, 0.9, 0.1)
+ind_min = which.min(en1$rmsep)
+
+en1[(ind_min-1):(ind_min+1),]
+```
+### Itération 2
+```{r echo=FALSE}
+en2 = elastic_net(X, Y, 0.3, 0.5, 0.01)
+ind_min = which.min(en2$rmsep)
+
+en2[(ind_min-1):(ind_min+1),]
+```
+### Itération 3
+```{r echo=FALSE}
+en3 = elastic_net(X, Y, 0.41, 0.43, 0.001)
+ind_min = which.min(en3$rmsep)
+
+en3[(ind_min-1):(ind_min+1),]
+```
+
+
+Le RMSEP minimum de elastic-net est 176.1242 pour alpha=0.422 et on obtient un lambda optimal de 25.2738
+
+## Coefficients du modèle elastic-net
+```{r echo=FALSE}
+m_elastic <- glmnet(X,Y, alpha = 0.422, lambda = 25.2738)
+coef(m_elastic)
+```
+
+
+# Conclusion
+Avec un RMSEP de 173.3 , le modèle obtenu par PCR est le meilleur modèle, c’est-à-dire avec la plus
+faible erreur moyenne de prédictions parmi les modèles obtenus par step AIC, PCR, PLS, Ridge, Lasso et
+elastic-net.
+Le modèle de PCR : 
+$PRICE = 190.2845 + 0.2877*SQFT - 2.6194*AGE - 2.2033*FEATS + 42.0871*NE + 151.4776*CUST - 72.0717*COR + 0.5136*TAX + erreur$
+C’est donc ce modèle qui nous donne les meilleurs prédictions selon le critère RMSEP.
+Par analyse des coefficents normalisés, les variables qui expliquent le mieux le prix des maisons sont "SQFT", "TAX" et "CUST".
+
+Par ailleurs, les variables SQFT et TAX sont celles qui sont gardés par tous les modèles. La variable CUST est celle qui ensuite revient le plus souvent parmi toutes les autres.
+
+Ainsi, les variables qui expliquent le mieux le prix sont le nombre de mètre carrés (ici les pieds carrés), le montant des taxes et le fait que la maison soit situé sur un coin de rue ou non.
+
+Ce qui quand on y réfléchit est totalement en raccord avec le fait que les prix des maisons sont calculé en fonction du nombre de metre carré.
+
+Pourquoi une maison situé sur un coin de rue vaudrait plus cher ? Les coins de rue sont des intersections pour les autombilites qui y rencontre très souvent un stop. Ainsi, la pollution sonore est plus faibel pour ces maisons, ce qui explique un prix de maison plus important.
+
+
+
+
+# Annexe : notre code R
+```{r, results='hide'}
+library(readr)
+maisons <- read_table2("maisons.txt", col_types = cols(AGE = col_integer(), 
+    NE = col_logical(), CUST = col_logical(), 
+    COR = col_logical(), TAX = col_integer()), 
+    skip = 17)
+str(maisons)
+```
+
+
+```{r, results='hide'}
+dim(maisons)
+```
+
+
+```{r, results='hide'}
+summary(maisons)
+```
+
+
+```{r, results='hide'}
+
+library(mice)
+md.pattern(maisons)
+
+```
+
+
+```{r, result='hide'}
+## MCAR, MAR ou MNAR
+#install.packages("VIM")
+library(VIM)
+
+for (var in colnames(maisons)){
+  marginplot(maisons[, c(var,"AGE")], col = mdc(c("obs", "mis")), cex = 1.2, cex.lab = 1.2,pch=19)
+}
+```
+
+```{r, results='hide'}
+t.test(maisons$PRICE[is.na(maisons$AGE)],maisons$PRICE[!is.na(maisons$AGE)])
+```
+
+```{r, results='hide'}
+t.test(maisons$FEATS[is.na(maisons$AGE)],maisons$FEATS[!is.na(maisons$AGE)])
+```
+
+```{r, results='hide'}
+t.test(maisons$SQFT[is.na(maisons$AGE)],maisons$SQFT[!is.na(maisons$AGE)])
+```
+```{r, results='hide'}
+t.test(maisons$TAX[is.na(maisons$AGE)],maisons$TAX[!is.na(maisons$AGE)])
+```
+
+```{r, results='hide'}
+library(corrplot)
+mcor <- cor(maisons[,1:8], use="pairwise.complete.obs")
+print(round(mcor*100,2))
+#corrplot(mcor, type="upper", order="hclust",tl.col="black", tl.srt = 45)
+```
+
+```{r, results='hide'}
+#MICE
+# Charger le paquet pour l'imputation des données manquantes
+library("mice")
+
+dm <- mice(maisons, m=5, maxit=50, seed=123, print=FALSE)
+
+```
+
+```{r, results='hide'}
+d1 = complete(dm,1)
+summary(d1)
+```
+
+```{r, results='hide'}
+library(lattice)
+stripplot(dm, pch = 20, cex = 1.2)
+```
+
+
+```{r, results='hide'}
+#Fusion des 5 jeux de données imputés
+moy_complete = function (mice_ds){
+  res = data.frame(row.names = T)
+  for (col in colnames(mice_ds$'1')){
+    for (i in 1:nrow(mice_ds$'1')) {
+      res[i, col] = mean(c(mice_ds$'1'[i, col], mice_ds$'2'[i, col], mice_ds$'3'[i, col], mice_ds$'4'[i, col], mice_ds$'5'[i, col]))
+    }
+  }
+  res[,"NE"] = as.logical(res[, "NE"])
+  res[,"COR"] = as.logical(res[, "COR"])
+  res[,"CUST"] = as.logical(res[, "CUST"])
+  return (res)
+}
+```
+
+```{r, results='hide'}
+dm_complete = complete(dm, "all")
+dm_moy_complete = moy_complete(dm_complete)
+```
+
+```{r, results='hide'}
+
+#Etude de la multicolinéarité
+library(FactoMineR)
+acp = PCA(dm_moy_complete[,c(1,2,3,4,8)], scale=T, graph = T, quanti.sup = 1) #-7 : sans la variable PRIX
+print(acp$eig)
+```
+
+```{r, results='hide'}
+fit <- lm(PRICE ~ ., dm_moy_complete)
+print(fit)
+```
+
+```{r, results='hide'}
+library(car)
+vif(fit)
+```
+
+
+```{r, results='hide'}
+#Selection des variables (Ridge, Lasso, PCR, PLS, Elastic-net et stepAIC)
+
+## stepAIC
+library(MASS)
+
+fit = lm(PRICE ~ ., dm_moy_complete)
+
+aic<- stepAIC(fit, trace=0)
+aic
+
+```
+
+
+```{r, results='hide'}
+rmsep=function(fit){
+  h=lm.influence(fit)$h
+  return(sqrt(mean((residuals(fit)/(1-h))^2)))
+}
+
+rmsep(aic)
+```
+
+## PCR
+
+```{r, results='hide'}
+library(pls)
+
+m_pcr=pcr(PRICE~., scale=TRUE, validation="LOO", jackknife = TRUE, data=dm_moy_complete)
+
+```
+
+```{r, results='hide'}
+plot(m_pcr,"validation", estimate = c("train", "CV"), legendpos = "topright")
+```
+```{r,  results='hide'}
+summary(m_pcr)
+```
+
+```{r, results='hide'}
+obsfit = predplot(m_pcr, ncomp=5, which = "validation", asp=1,line=TRUE, main="Predicted vs Observed : 5cp")
+points(obsfit, pch=16, col="red")
+```
+
+
+```{r, results='hide', fig.align='center'}
+coefplot(m_pcr, ncomp=5, se.whiskers = TRUE, labels = prednames(m_pcr), cex.axis = 0.5)
+```
+
+
+```{r, results='hide'}
+jack.test(m_pcr, ncomp=5)
+```
+
+```{r, results='hide'}
+coef(m_pcr, ncomp=5, intercept=TRUE)
+```
+Les variables qui ont le plus d'importance dans le modèle obtenu sont les variables "SQFT", "TAX" et "CUST". Nous pouvons noter que ces variables sont égalmenet dans le modèle issu de stepAIC.
+
+
+```{r, results='hide', fig.align='center'}
+sds = apply(dm_moy_complete,2, "sd" ) # calcul des ecart-types de chaque variable
+coef(m_pcr, ncomp=5, intercept=TRUE)[2:8]/sds[2:8]
+```
+
+```{r, results='hide'}
+##PLS
+m_pls=plsr(PRICE~., scale=TRUE, validation="LOO", jackknife = TRUE, data=dm_moy_complete)
+```
+
+```{r, results='hide', fig.align='center'}
+plot(m_pls,"validation", estimate = c("train", "CV"), legendpos = "topright")
+```
+
+```{r, results='hide'}
+summary(m_pls)
+```
+
+```{r, results='hide', fig.align='center'}
+obsfit = predplot(m_pls, ncomp=3, which = "validation", asp=1,line=TRUE, main="Predicted vs Observed : 3cp")
+points(obsfit, pch=16, col="red")
+```
+
+
+```{r, results='hide', fig.align='center'}
+coefplot(m_pls, ncomp=3, se.whiskers = TRUE, labels = prednames(m_pcr), cex.axis = 0.5)
+```
+
+
+```{r , results='hide'}
+jack.test(m_pls, ncomp=3)
+```
+
+```{r, results='hide'}
+coef(m_pls, ncomp=3, intercept=TRUE)
+```
+
+
+```{r, results='hide'}
+sds = apply(dm_moy_complete,2, "sd" ) # calcul des ecart-types de chaque variable
+coef(m_pls, ncomp=3, intercept=TRUE)[2:8]/sds[2:8]
+```
+
+
+```{r, results='hide'}
+## Ridge
+X = model.matrix(PRICE~., dm_moy_complete)[,-1]
+Y =dm_moy_complete$PRICE
+```
+
+```{r, results='hide'}
+library(glmnet)
+#choisisons le lambda qui minimise le RMSEP (ou equivalent, la cross-validation = MSEP):
+cv_fit <- cv.glmnet(X,Y, alpha = 0, lambda = seq(0,10, 0.1), grouped = FALSE, nfolds =nrow(dm_moy_complete))
+plot(cv_fit, main = "Choix de lambda")
+```
+
+```{r, results='hide'}
+cv_fit <- cv.glmnet(X,Y, alpha = 0, lambda = seq(0,100000, 10), grouped = FALSE, nfolds =nrow(dm_moy_complete))
+plot(cv_fit, main = "Choix de lambda")
+```
+
+
+```{r, results='hide'}
+lambda_optimal = cv_fit$lambda.min
+print(lambda_optimal)
+```
+
+```{r, results='hide'}
+print(min(cv_fit$cvm))
+```
+
+
+```{r , results='hide'}
+rmsep_ridge =sqrt(min(cv_fit$cvm))
+print(rmsep_ridge)
+```
+
+```{r, results='hide'}
+m_ridge <- glmnet(X,Y, alpha = 0, lambda = lambda_optimal)
+```
+
+
+
+
+```{r, results='hide'}
+### Coefficients sur les données d'origine
+coef(m_ridge) # pour voir les coefficients
+```
+
+```{r , results='hide'}
+## Lasso
+cv_fit <- cv.glmnet(X,Y, alpha = 1, lambda = seq(0,100000, 10), grouped = FALSE, nfolds =nrow(dm_moy_complete))
+plot(cv_fit, main = "Choix de lambda")
+```
+
+
+```{r , results='hide'}
+lambda_optimal = cv_fit$lambda.min
+print(lambda_optimal)
+```
+
+```{r , results='hide'}
+print(min(cv_fit$cvm))
+```
+```{r, results='hide'}
+### Coefficients sur les données normalisés
+sds = apply(dm_moy_complete,2, "sd" )
+coef(m_ridge)[2:8]*sds[2:8]
+```
+
+
+```{r, results='hide'}
+rmsep_lasso =sqrt(min(cv_fit$cvm))
+print(rmsep_lasso)
+```
+
+```{r, results='hide'}
+m_lasso <- glmnet(X,Y, alpha = 1, lambda = lambda_optimal)
+```
+
+
+```{r, results='hide'}
+### Coefficients sur les données normalisés
+coef(m_lasso)[2:8]*sds[2:8]
+```
+
+
+```{r, results='hide'}
+### Coefficients sur les données d'origine
+coef(m_lasso)
+```
+
+
+```{r, results='hide'}
+## Elastic-net
+elastic_net = function(X, Y, alpha_start, alpha_end, step){
+  d = data.frame(matrix(ncol = 3))
+  colnames(d) = c("alpha", "rmsep", "lambda")
+  alpha = alpha_start
+  i = 1
+  while(alpha < alpha_end){
+    cv_fit <- cv.glmnet(X,Y, alpha = alpha, grouped = FALSE, nfolds =nrow(X))
+    lambda = cv_fit$lambda.min
+    rmsep =sqrt(min(cv_fit$cvm))
+    d[i,] = c(alpha, rmsep, lambda)
+    alpha <- alpha + step
+    i = i + 1
+  }
+  return (d)
+}
+
+
+en1 = elastic_net(X, Y, 0.1, 0.9, 0.1)
+ind_min = which.min(en1$rmsep)
+
+en1[(ind_min-1):(ind_min+1),]
+```
+
+```{r, results='hide'}
+en2 = elastic_net(X, Y, 0.3, 0.5, 0.01)
+ind_min = which.min(en2$rmsep)
+
+en2[(ind_min-1):(ind_min+1),]
+```
+
+```{r, results='hide'}
+en3 = elastic_net(X, Y, 0.41, 0.43, 0.001)
+ind_min = which.min(en3$rmsep)
+
+en3[(ind_min-1):(ind_min+1),]
+```
+
+```{r, results='hide'}
+m_elastic <- glmnet(X,Y, alpha = 0.422, lambda = 25.2738)
+coef(m_elastic)
+```

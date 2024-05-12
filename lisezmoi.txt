@@ -1,0 +1,4 @@
+Projet  Maisons
+Fichier : maisons.txt
+
+Objectif. Description multivariée des caractéristiques des maisons, leur prix et la taxe d'habitation. Quelles variables expliquent le mieux le prix ? 
